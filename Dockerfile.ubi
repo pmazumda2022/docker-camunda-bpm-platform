@@ -1,0 +1,93 @@
+FROM registry.access.redhat.com/ubi9/ubi:9.2-722.1692769367 as builder
+
+LABEL name="camunda-7.20.0-ubi9-standard" description="camunda bpm platform image with UBI as base" version="1.0" maintainer="IditDevOps<devops-idit@sapiens.com>"
+
+
+ARG VERSION=7.20.0
+ARG DISTRO=tomcat
+ARG SNAPSHOT=true
+ARG EE=false
+ARG USER
+ARG PASSWORD
+
+ARG MAVEN_PROXY_HOST
+ARG MAVEN_PROXY_PORT
+ARG MAVEN_PROXY_USER
+ARG MAVEN_PROXY_PASSWORD
+
+ARG JMX_PROMETHEUS_VERSION=0.12.0
+
+ARG EXTRA_PACKAGE="https://dl.fedoraproject.org/pub/epel/7/x86_64/Packages/x/xmlstarlet-1.6.1-1.el7.x86_64.rpm"
+
+RUN yum update -y && rm -rf /var/cache/yum && yum install -y maven \ 
+                                                             zip \
+                                                             wget \
+                                                             ${EXTRA_PACKAGE} \
+&& yum clean all
+
+COPY settings.xml download.sh camunda-run.sh camunda-tomcat.sh camunda-wildfly.sh  /tmp/
+
+RUN /tmp/download.sh
+
+
+##### FINAL IMAGE #####
+
+FROM registry.access.redhat.com/ubi9/ubi:9.2-722.1692769367
+
+ARG VERSION=7.20.0
+
+ENV CAMUNDA_VERSION=${VERSION}
+ENV DB_DRIVER=
+ENV DB_URL=
+ENV DB_USERNAME=
+ENV DB_PASSWORD=
+ENV DB_CONN_MAXACTIVE=20
+ENV DB_CONN_MINIDLE=5
+ENV DB_CONN_MAXIDLE=20
+ENV DB_VALIDATE_ON_BORROW=false
+ENV DB_VALIDATION_QUERY="SELECT 1"
+ENV SKIP_DB_CONFIG=
+ENV WAIT_FOR=
+ENV WAIT_FOR_TIMEOUT=30
+ENV TZ=UTC
+ENV DEBUG=false
+ENV JAVA_OPTS=""
+ENV JMX_PROMETHEUS=false
+ENV JMX_PROMETHEUS_CONF=/camunda/javaagent/prometheus-jmx.yml
+ENV JMX_PROMETHEUS_PORT=9404
+
+EXPOSE 8080 8000 9404
+
+# Downgrading wait-for-it is necessary until this PR is merged
+# https://github.com/vishnubob/wait-for-it/pull/68
+
+
+ENV JAVA_VERSION java-17-openjdk-headless
+ENV TINI_VERSION v0.19.0
+ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /usr/bin/tini
+ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini.asc /usr/bin/tini.asc
+RUN gpg --batch --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 595E85A6B1B4779EA4DAAEC70B588DFF0527A9B7 \
+ && gpg --batch --verify /usr/bin/tini.asc /usr/bin/tini
+RUN chmod +x /usr/bin/tini
+
+RUN yum update -y && rm -rf /var/cache/yum && yum install -y pip \
+                                                             ${JAVA_VERSION} \ 
+                                                             zip \
+                                                             wget \
+                                                             ${EXTRA_PACKAGE} \
+&& curl -o /usr/local/bin/wait-for-it.sh \
+      "https://raw.githubusercontent.com/vishnubob/wait-for-it/a454892f3c2ebbc22bd15e446415b8fcb7c1cfa4/wait-for-it.sh" \
+&& chmod +x /usr/local/bin/wait-for-it.sh \
+&& yum clean all
+
+RUN groupadd -g 1000 camunda && \
+    useradd -u 1000 camunda -g camunda -md /camunda -s /bin/bash
+WORKDIR /camunda
+USER camunda
+
+RUN pip install tzdata 
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["./camunda.sh"]
+
+COPY --chown=camunda:camunda --from=builder /camunda .
